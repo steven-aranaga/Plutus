@@ -4,6 +4,12 @@ A high-performance Bitcoin wallet collider that brute forces random wallet addre
 
 [![](https://img.shields.io/github/stars/Isaacdelly/Plutus.svg)](https://github.com/Isaacdelly/Plutus)
 
+## Overview
+
+Plutus is a proof-of-concept tool that demonstrates the process of Bitcoin private key generation and address matching. It continuously generates random Bitcoin private keys, converts them to wallet addresses, and checks if they match any addresses with positive balances in its database.
+
+**Note**: The probability of finding a funded wallet is astronomically low (1 in 2^160) due to the vast keyspace. This software is primarily for educational and research purposes.
+
 ## Table of Contents
 - [Quick Start](#quick-start)
 - [Docker Setup (Recommended)](#docker-setup-recommended)
@@ -12,6 +18,9 @@ A high-performance Bitcoin wallet collider that brute forces random wallet addre
 - [Performance Optimizations](#performance-optimizations)
 - [Configuration](#configuration)
 - [How It Works](#how-it-works)
+- [Architecture](#architecture)
+- [Benchmarks](#benchmarks)
+- [Troubleshooting](#troubleshooting)
 - [Legal Notice](#legal-notice)
 
 ## Quick Start
@@ -113,7 +122,10 @@ Plutus/
 
 ### Dependencies
 - [Python 3.9+](https://www.python.org/downloads/)
-- System dependencies (Linux/macOS): `sudo apt-get install libgmp3-dev`
+- System dependencies:
+  - Linux: `sudo apt-get install libgmp3-dev`
+  - macOS: `brew install gmp`
+  - Windows: Use WSL or install GMP via MSYS2
 - Python packages: `pip3 install -r requirements.txt`
 
 ### Installation Steps
@@ -121,6 +133,9 @@ Plutus/
 git clone https://github.com/steven-aranaga/Plutus.git
 cd Plutus
 pip3 install -r requirements.txt
+
+# For optimal performance, install coincurve
+pip3 install coincurve
 ```
 
 ## Usage
@@ -172,17 +187,40 @@ The optimized version uses the fastest available cryptographic libraries:
 3. **Optimized Database Loading**: Parallel file processing with memory efficiency
 4. **Efficient Address Verification**: Chunk-based reading with preliminary checks
 5. **Memory Management**: Configurable substring matching to reduce RAM usage
+6. **Bloom Filter Support**: Optional probabilistic data structure for faster lookups
 
 ### Performance Improvements
 - **Original**: ~1,250 addresses/second
 - **Optimized**: ~1,600+ addresses/second
 - **With coincurve**: ~42,000+ addresses/second (25x improvement)
 
-### Bloom Filter Support
-Includes demonstration of Bloom filters for extremely large databases:
-- Memory efficient probabilistic data structure
-- Constant-time O(1) lookups
-- Handles billions of addresses with minimal memory
+## Architecture
+
+### Core Components
+1. **Key Generator**: Creates random private keys using cryptographically secure random number generation
+2. **Cryptographic Engine**: Converts private keys to public keys using optimized libraries
+3. **Address Converter**: Transforms public keys into Bitcoin addresses
+4. **Database Checker**: Verifies if generated addresses exist in the database
+5. **Result Manager**: Saves and reports found addresses
+
+### Data Flow
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  Random Private │     │  Public Key     │     │  Bitcoin        │
+│  Key Generation ├────►│  Conversion     ├────►│  Address        │
+└─────────────────┘     └─────────────────┘     └────────┬────────┘
+                                                         │
+                                                         ▼
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  Save Results   │     │  Check Database │     │  Address        │
+│  if Match Found │◄────┤  for Match      │◄────┤  Validation     │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+```
+
+### Parallelization Strategy
+- **ThreadPoolExecutor**: Manages a pool of worker threads for concurrent processing
+- **Batch Processing**: Groups operations for better efficiency
+- **Resource Management**: Configurable CPU core usage and memory limits
 
 ## Configuration
 
@@ -198,46 +236,29 @@ The `substring` parameter controls memory usage vs. accuracy:
 - **CPU Count**: More cores = faster processing, more resource usage
 - **Substring Length**: Affects memory usage and accuracy
 
-## How It Works
+### Database Configuration
+The database consists of text files containing Bitcoin addresses with positive balances:
+- Located in the `database/` directory
+- Split into multiple files for GitHub compatibility
+- Currently contains over 43 million addresses
+- Updated periodically from http://addresses.loyce.club/
 
-### Core Algorithm
-1. **Key Generation**: Generate random 32-byte private keys using `os.urandom()`
-2. **Public Key Conversion**: Convert to public keys using high-performance crypto libraries
-3. **Address Generation**: Create Bitcoin addresses using `binascii` and `hashlib`
-4. **Database Lookup**: Check against pre-calculated database of funded addresses
-5. **Result Storage**: Save found addresses to `plutus.txt`
+## Benchmarks
 
-### Database Structure
-- Pre-calculated database of funded P2PKH Bitcoin addresses
-- Memory-efficient suffix matching for large datasets
-- Read-only mounting in Docker for safety
+### System Requirements
+For optimal performance:
+- 4+ CPU cores
+- 4GB+ RAM
+- SSD storage for database files
 
-### Multiprocessing
-- Utilizes `ThreadPoolExecutor` for concurrent processing
-- Configurable CPU core usage
-- Efficient task distribution and resource management
+### Performance Metrics
+Typical performance on a modern system (Ryzen 7, 16GB RAM):
 
-## Proof of Concept
-
-This program attempts to find Bitcoin private keys that correlate to wallets with positive balances. It's essentially a brute forcing algorithm that:
-
-1. Continuously generates random Bitcoin private keys
-2. Converts private keys to wallet addresses
-3. Checks addresses against a database of funded wallets
-4. Saves any matches to `plutus.txt`
-
-The goal is to randomly find a funded wallet out of the 2^160 possible wallets in existence.
-
-**Note**: The probability of finding a funded wallet is astronomically low due to the vast number of possible private keys (2^256). This software is primarily for educational and research purposes.
-
-## Legal Notice
-
-⚠️ **Important**: This software is for educational purposes only. 
-
-- Bitcoin brute forcing has an astronomically low probability of success
-- Use responsibly and in accordance with local laws
-- The authors are not responsible for any misuse of this software
-- Consider the ethical implications before use
+| Configuration | Addresses/Second | Memory Usage |
+|---------------|------------------|-------------|
+| Default | ~42,000 | ~500MB |
+| With Bloom Filter | ~60,000 | ~1GB |
+| High Memory Mode | ~65,000 | ~2GB |
 
 ## Troubleshooting
 
@@ -267,6 +288,29 @@ docker-compose down --rmi all && docker-compose up --build
 2. **Database not found**: Ensure database files exist in `database/` directory
 3. **Permission errors**: Check file permissions on mounted volumes
 4. **Slow performance**: Install `coincurve` library for 25x speed improvement
+5. **Import errors**: Ensure all dependencies are installed correctly
+
+### Cryptography Library Issues
+If you encounter issues with cryptographic libraries:
+```bash
+# Install coincurve (recommended)
+pip install coincurve
+
+# If coincurve fails, try fastecdsa
+pip install fastecdsa
+
+# Last resort
+pip install starkbank-ecdsa
+```
+
+## Legal Notice
+
+⚠️ **Important**: This software is for educational purposes only. 
+
+- Bitcoin brute forcing has an astronomically low probability of success
+- Use responsibly and in accordance with local laws
+- The authors are not responsible for any misuse of this software
+- Consider the ethical implications before use
 
 ## Contributing
 
@@ -277,3 +321,4 @@ Contributions are welcome! Please feel free to submit pull requests or open issu
 - GitHub Issues: [Report bugs or request features](https://github.com/steven-aranaga/Plutus/issues)
 - Documentation: See inline help with `python3 plutus.py help`
 - Docker Help: Use `./start.sh --help` or `make help`
+

@@ -14,6 +14,8 @@ import time
 import concurrent.futures
 import itertools
 import mmap
+import psutil
+import tqdm
 
 # Import the fastest available cryptography library
 try:
@@ -35,12 +37,30 @@ except ImportError:
             print("ERROR: No ECC library found. Install one of: coincurve, fastecdsa, or starkbank-ecdsa")
             sys.exit(1)
 
+# Try to import Bloom filter for faster lookups
+try:
+    from pybloom_live import ScalableBloomFilter
+    BLOOM_FILTER_AVAILABLE = True
+except ImportError:
+    BLOOM_FILTER_AVAILABLE = False
+
 print(f"Using {CRYPTO_LIB} cryptography library")
+if BLOOM_FILTER_AVAILABLE:
+    print("Bloom filter support available (faster lookups)")
+else:
+    print("Bloom filter not available. Install pybloom-live for faster lookups")
 
 DATABASE = r'database/11_13_2022/'
 
 # Use a batch size for generating multiple keys at once
 BATCH_SIZE = 1000
+
+# Memory usage monitoring
+def get_memory_usage():
+    """Return the memory usage in MB"""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    return mem_info.rss / 1024 / 1024  # Convert to MB
 
 def generate_private_keys(batch_size=BATCH_SIZE):
     """Generate multiple private keys at once for better efficiency"""
@@ -116,20 +136,39 @@ def process_key_batch(args):
     # Generate a batch of private keys
     private_keys = generate_private_keys(batch_size)
     
-    for private_key in private_keys:
-        public_key = private_key_to_public_key(private_key, config['fastecdsa'])
-        address = public_key_to_address(public_key)
+    # Process keys in parallel using a thread pool
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, os.cpu_count())) as executor:
+        # Create public keys in parallel
+        public_keys = list(executor.map(
+            lambda pk: private_key_to_public_key(pk, config['fastecdsa']), 
+            private_keys
+        ))
         
+        # Create addresses in parallel
+        addresses = list(executor.map(public_key_to_address, public_keys))
+    
+    # Check addresses against database
+    for i, address in enumerate(addresses):
         if config['verbose']:
             print(address)
         
-        # Check if the address suffix is in our database
-        if address[-config['substring']:] in database:
-            # Verify the full address in the database files
-            found = verify_address_in_database(address, config['substring'])
-            if found:
-                found_addresses.append((private_key, public_key, address))
-                save_found_address(private_key, public_key, address)
+        # Check if using bloom filter or set
+        if isinstance(database, ScalableBloomFilter):
+            # Use bloom filter for fast lookup
+            if address[-config['substring']:] in database:
+                # Verify the full address in the database files (bloom filter can have false positives)
+                found = verify_address_in_database(address, config['substring'])
+                if found:
+                    found_addresses.append((private_keys[i], public_keys[i], address))
+                    save_found_address(private_keys[i], public_keys[i], address)
+        else:
+            # Use set for lookup
+            if address[-config['substring']:] in database:
+                # Verify the full address in the database files
+                found = verify_address_in_database(address, config['substring'])
+                if found:
+                    found_addresses.append((private_keys[i], public_keys[i], address))
+                    save_found_address(private_keys[i], public_keys[i], address)
     
     return found_addresses
 
@@ -142,26 +181,28 @@ def verify_address_in_database(address, substring_length):
         file_path = os.path.join(DATABASE, filename)
         
         # Use memory mapping for faster file searching
-        with open(file_path, 'r') as f:
-            # First check if the file contains the address using a faster method
-            # Read the file in chunks and check for the address
-            chunk_size = 1024 * 1024  # 1MB chunks
-            found = False
-            
-            # Read the file in chunks for better memory efficiency
-            while True:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                    
-                # If the address is in this chunk, do a more detailed search
-                if address in chunk:
-                    # Go back to the beginning of the file for a line-by-line search
-                    f.seek(0)
-                    for line in f:
-                        if address == line.strip():
-                            return True
-                    break
+        try:
+            with open(file_path, 'r') as f:
+                # First check if the file contains the address using a faster method
+                # Read the file in chunks and check for the address
+                chunk_size = 1024 * 1024  # 1MB chunks
+                
+                # Read the file in chunks for better memory efficiency
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                        
+                    # If the address is in this chunk, do a more detailed search
+                    if address in chunk:
+                        # Go back to the beginning of the file for a line-by-line search
+                        f.seek(0)
+                        for line in f:
+                            if address == line.strip():
+                                return True
+                        break
+        except Exception as e:
+            print(f"Error checking file {file_path}: {e}")
     
     return False
 
@@ -172,6 +213,11 @@ def save_found_address(private_key, public_key, address):
                      'WIF private key: ' + str(private_key_to_wif(private_key)) + '\n' +
                      'public key: ' + str(public_key) + '\n' +
                      'uncompressed address: ' + str(address) + '\n\n')
+    
+    # Also print to console for immediate notification
+    print("\n" * 50)
+    print(f"FOUND ADDRESS WITH BALANCE: {address}")
+    print("=" * 50 + "\n")
 
 def main(database, args):
     """Main function that processes batches of keys in parallel"""
@@ -180,6 +226,15 @@ def main(database, args):
         # Process batches of keys
         batch_args = [(database, args, BATCH_SIZE) for _ in range(args['cpu_count'])]
         
+        # Track statistics
+        start_time = time.time()
+        total_addresses = 0
+        last_report_time = start_time
+        report_interval = 10  # Report every 10 seconds
+        
+        print(f"Starting brute force with {args['cpu_count']} workers, batch size {BATCH_SIZE}")
+        print(f"Memory usage at start: {get_memory_usage():.2f} MB")
+        
         while True:
             # Submit batch processing tasks
             futures = [executor.submit(process_key_batch, arg) for arg in batch_args]
@@ -187,6 +242,18 @@ def main(database, args):
             # Wait for all tasks to complete
             for future in concurrent.futures.as_completed(futures):
                 found_addresses = future.result()
+                total_addresses += BATCH_SIZE * args['cpu_count']
+                
+                # Periodically report statistics
+                current_time = time.time()
+                if current_time - last_report_time > report_interval:
+                    elapsed = current_time - start_time
+                    addresses_per_second = total_addresses / elapsed
+                    print(f"Processed {total_addresses:,} addresses in {elapsed:.2f} seconds "
+                          f"({addresses_per_second:.2f} addr/sec) - "
+                          f"Memory: {get_memory_usage():.2f} MB")
+                    last_report_time = current_time
+                
                 if found_addresses:
                     print(f"Found {len(found_addresses)} addresses with balances!")
 
@@ -208,7 +275,9 @@ substring: to make the program memory efficient, the entire bitcoin address is n
 
 batch_size: number of addresses to generate and check in a single batch. Higher values can improve performance but use more memory. Default is 1000.
 
-cpu_count: number of cores to run concurrently. More cores = more resource usage but faster bruteforcing. Omit this parameter to run with the maximum number of cores''')
+cpu_count: number of cores to run concurrently. More cores = more resource usage but faster bruteforcing. Omit this parameter to run with the maximum number of cores
+
+use_bloom: 0 or 1. If 1, uses a Bloom filter for faster lookups (requires pybloom-live). Default is 1 if available.''')
     sys.exit(0)
 
 def timer(args):
@@ -231,62 +300,83 @@ def timer(args):
     print(f"Total time for {batch_size} addresses: {total_time:.6f} seconds")
     print(f"Time per address: {per_address:.6f} seconds")
     print(f"Addresses per second: {batch_size/total_time:.2f}")
+    
+    # Run a more comprehensive benchmark if requested
+    if args.get('extended_benchmark', False):
+        print("\nRunning extended benchmark...")
+        
+        # Test different batch sizes
+        batch_sizes = [10, 100, 1000, 5000]
+        for size in batch_sizes:
+            start = time.time()
+            private_keys = generate_private_keys(size)
+            for private_key in private_keys:
+                public_key = private_key_to_public_key(private_key, args['fastecdsa'])
+                address = public_key_to_address(public_key)
+            end = time.time()
+            print(f"Batch size {size}: {size/(end-start):.2f} addr/sec, {end-start:.4f} seconds total")
+        
+        # Test parallel processing
+        print("\nTesting parallel processing...")
+        for num_workers in [1, 2, 4, 8]:
+            if num_workers > os.cpu_count():
+                continue
+                
+            start = time.time()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+                private_keys = generate_private_keys(1000)
+                list(executor.map(lambda pk: public_key_to_address(private_key_to_public_key(pk, args['fastecdsa'])), private_keys))
+            end = time.time()
+            print(f"Workers: {num_workers}, Speed: {1000/(end-start):.2f} addr/sec")
+    
     sys.exit(0)
 
-def load_database_efficiently(substring_length):
+def load_database_efficiently(substring_length, use_bloom=False):
     """Load database more efficiently with reduced memory usage"""
     print('Reading database files...')
-    database = set()
+    
+    if use_bloom and BLOOM_FILTER_AVAILABLE:
+        print("Using Bloom filter for database lookups")
+        # Create a scalable Bloom filter with a low false positive probability
+        database = ScalableBloomFilter(initial_capacity=1000000, error_rate=0.000001)
+    else:
+        database = set()
+        
     total_addresses = 0
     max_files_at_once = 5  # Process only a few files at a time to reduce memory usage
-    
-    def process_file(file_path):
-        """Process a single database file and return the suffixes"""
-        local_suffixes = set()
-        local_count = 0
-        
-        try:
-            with open(file_path, 'r') as file:
-                # Process the file line by line to minimize memory usage
-                for line in file:
-                    address = line.strip()
-                    if address and address.startswith('1'):  # Only process P2PKH addresses
-                        local_suffixes.add(address[-substring_length:])
-                        local_count += 1
-                        
-                        # Periodically clear memory by returning partial results
-                        if local_count % 100000 == 0:
-                            yield local_suffixes, local_count
-                            local_suffixes = set()
-                            local_count = 0
-                
-                # Return any remaining results
-                if local_count > 0:
-                    yield local_suffixes, local_count
-        except Exception as e:
-            print(f"Error processing {file_path}: {e}")
-            yield set(), 0
     
     # Get all database files
     file_paths = [os.path.join(DATABASE, filename) for filename in os.listdir(DATABASE)]
     
-    # Process files in smaller batches to reduce memory usage
-    for i in range(0, len(file_paths), max_files_at_once):
-        batch = file_paths[i:i+max_files_at_once]
-        print(f"Processing batch {i//max_files_at_once + 1}/{(len(file_paths) + max_files_at_once - 1)//max_files_at_once}")
-        
-        # Process this batch of files
-        for file_path in batch:
-            file_total = 0
-            for suffixes, count in process_file(file_path):
-                database.update(suffixes)
-                file_total += count
-                total_addresses += count
+    # Show progress bar
+    with tqdm.tqdm(total=len(file_paths), desc="Loading database") as pbar:
+        # Process files in smaller batches to reduce memory usage
+        for i in range(0, len(file_paths), max_files_at_once):
+            batch = file_paths[i:i+max_files_at_once]
             
-            print(f"Processed {file_path} - {file_total} addresses")
+            # Process this batch of files
+            for file_path in batch:
+                file_total = 0
+                try:
+                    with open(file_path, 'r') as file:
+                        # Process the file line by line to minimize memory usage
+                        for line in file:
+                            address = line.strip()
+                            if address and address.startswith('1'):  # Only process P2PKH addresses
+                                if use_bloom and BLOOM_FILTER_AVAILABLE:
+                                    database.add(address[-substring_length:])
+                                else:
+                                    database.add(address[-substring_length:])
+                                file_total += 1
+                                total_addresses += 1
+                except Exception as e:
+                    print(f"Error processing {file_path}: {e}")
+                
+                pbar.update(1)
     
-    print(f'DONE - Loaded {total_addresses} addresses into {len(database)} unique suffixes')
-    return database
+    print(f'DONE - Loaded {total_addresses:,} addresses into database')
+    print(f'Memory usage after loading: {get_memory_usage():.2f} MB')
+    return database, total_addresses
 
 if __name__ == '__main__':
     args = {
@@ -295,6 +385,8 @@ if __name__ == '__main__':
         'fastecdsa': platform.system() in ['Linux', 'Darwin'],
         'cpu_count': multiprocessing.cpu_count(),
         'batch_size': BATCH_SIZE,
+        'use_bloom': BLOOM_FILTER_AVAILABLE,
+        'extended_benchmark': False,
     }
     
     # Parse command line arguments
@@ -307,6 +399,7 @@ if __name__ == '__main__':
         if command == 'help':
             print_help()
         elif command == 'time':
+            args['extended_benchmark'] = True if value == 'extended' else False
             timer(args)
         elif command == 'cpu_count' and value:
             cpu_count = int(value)
@@ -333,18 +426,36 @@ if __name__ == '__main__':
             if batch_size > 0:
                 args['batch_size'] = batch_size
                 # Update the module-level batch size
-                args['batch_size'] = batch_size
+                BATCH_SIZE = batch_size
             else:
                 print('Invalid input. batch_size must be greater than 0')
+                sys.exit(-1)
+        elif command == 'use_bloom' and value:
+            if value in ['0', '1']:
+                use_bloom = int(value) == 1
+                if use_bloom and not BLOOM_FILTER_AVAILABLE:
+                    print('Warning: Bloom filter requested but pybloom-live is not installed.')
+                    print('Install with: pip install pybloom-live')
+                    args['use_bloom'] = False
+                else:
+                    args['use_bloom'] = use_bloom
+            else:
+                print('Invalid input. use_bloom must be 0(false) or 1(true)')
                 sys.exit(-1)
         else:
             print(f'Invalid input: {command}\nRun `python3 plutus.py help` for help')
             sys.exit(-1)
     
-    # Load the database efficiently
-    database = load_database_efficiently(args['substring'])
+    # Print system information
+    print(f"Python version: {platform.python_version()}")
+    print(f"System: {platform.system()} {platform.release()}")
+    print(f"CPU cores: {multiprocessing.cpu_count()}")
+    print(f"Initial memory usage: {get_memory_usage():.2f} MB")
     
-    print(f'Database size: {len(database)} unique suffixes')
+    # Load the database efficiently
+    database, total_addresses = load_database_efficiently(args['substring'], args['use_bloom'])
+    
+    print(f'Database size: {len(database):,} unique suffixes')
     print(f'Batch size: {args["batch_size"]} addresses per batch')
     print(f'Processes spawned: {args["cpu_count"]}')
     

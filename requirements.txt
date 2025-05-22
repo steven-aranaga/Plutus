@@ -1,2 +1,16 @@
-fastecdsa
-starkbank-ecdsa
+# Core cryptographic libraries (in order of preference)
+coincurve>=18.0.0
+fastecdsa>=2.2.3
+starkbank-ecdsa>=2.0.0
+
+# Performance optimization
+pybloom-live>=4.0.0
+
+# Utilities
+tqdm>=4.64.0
+psutil>=5.9.0
+
+# Optional: For advanced monitoring
+# matplotlib>=3.5.0
+# numpy>=1.22.0
+
