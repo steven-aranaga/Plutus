@@ -1,0 +1,42 @@
+# Docker Compose Override for Development
+# This file is automatically loaded by docker-compose
+# Use it for development-specific configurations
+
+version: '3.8'
+
+services:
+  plutus:
+    # Mount source code for development (uncomment for live editing)
+    # volumes:
+    #   - .:/app
+    
+    # Enable debug mode (uncomment for debugging)
+    # environment:
+    #   - PYTHONPATH=/app
+    #   - PYTHONUNBUFFERED=1
+    
+    # Override command for development (uncomment for custom commands)
+    # command: python3 plutus.py verbose=1 batch_size=100
+    
+    # Add development ports if needed
+    # ports:
+    #   - "8080:8080"
+    
+    # Development resource limits (more lenient)
+    deploy:
+      resources:
+        limits:
+          cpus: '8.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 512M
+
+  # Development database service (if you want to run a test database)
+  # test-db:
+  #   image: alpine:latest
+  #   volumes:
+  #     - ./test-database:/test-db
+  #   command: sh -c "echo 'Test database container'"
+  #   profiles:
+  #     - testing

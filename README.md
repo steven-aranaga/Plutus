@@ -1,94 +1,279 @@
 # Plutus Bitcoin Brute Forcer
 
-A Bitcoin wallet collider that brute forces random wallet addresses
-
-# Like This Project? Give It A Star
+A high-performance Bitcoin wallet collider that brute forces random wallet addresses with Docker support and advanced optimizations.
 
 [![](https://img.shields.io/github/stars/Isaacdelly/Plutus.svg)](https://github.com/Isaacdelly/Plutus)
 
-# Dependencies
+## Table of Contents
+- [Quick Start](#quick-start)
+- [Docker Setup (Recommended)](#docker-setup-recommended)
+- [Manual Installation](#manual-installation)
+- [Usage](#usage)
+- [Performance Optimizations](#performance-optimizations)
+- [Configuration](#configuration)
+- [How It Works](#how-it-works)
+- [Legal Notice](#legal-notice)
 
-<a href="https://www.python.org/downloads/">Python 3.9</a> or higher
+## Quick Start
 
-Python modules listed in the <a href="/requirements.txt">requirements.txt<a/>
+### Using Docker (Recommended)
+```bash
+# Clone the repository
+git clone https://github.com/steven-aranaga/Plutus.git
+cd Plutus
 
-If you have a __Linux__ or __MacOS__ operating system, libgmp3-dev is required. If you have __Windows__ then this is not required. Install by running the command:
-```
-sudo apt-get install libgmp3-dev
+# Quick start with Docker
+./start.sh
+
+# Or with monitoring
+./start.sh --monitor
+
+# Or run benchmark
+./start.sh --benchmark
 ```
 
-# Installation
+### Using Make Commands
+```bash
+make quick-start    # Setup and run
+make run           # Run normally
+make run-bg        # Run in background
+make monitor       # Run with monitoring
+make benchmark     # Performance test
+make logs          # View logs
+make stop          # Stop containers
+```
 
-```
-git clone https://github.com/Isaacdelly/Plutus.git plutus
-```
-```
-cd plutus && pip3 install -r requirements.txt
-```
+### Manual Python Installation
+```bash
+# Install dependencies
+sudo apt-get install libgmp3-dev  # Linux/macOS only
+pip3 install -r requirements.txt
 
-# Quick Start
-
-```
+# Run directly
 python3 plutus.py
 ```
 
-# Proof Of Concept
+## Docker Setup (Recommended)
 
-A private key is a secret number that allows Bitcoins to be spent. If a wallet has Bitcoins in it, then the private key will allow a person to control the wallet and spend whatever balance the wallet has. So this program attempts to find Bitcoin private keys that correlate to wallets with positive balances. However, because it is impossible to know which private keys control wallets with money and which private keys control empty wallets, we have to randomly look at every possible private key that exists and hope to find one that has a balance.
+This project includes a complete Docker Compose setup for easy deployment and management.
 
-This program is essentially a brute forcing algorithm. It continuously generates random Bitcoin private keys, converts the private keys into their respective wallet addresses, then checks the balance of the addresses. If a wallet with a balance is found, then the private key, public key and wallet address are saved to the text file `plutus.txt` on the user's hard drive. The ultimate goal is to randomly find a wallet with a balance out of the 2<sup>160</sup> possible wallets in existence. 
+### Prerequisites
+- Docker and Docker Compose
+- At least 2GB RAM
+- Bitcoin address database files
 
-# How It Works
+### Available Services
 
-32 byte hexidecimal strings are generated randomly using `os.urandom()` and are used as our private keys.
+#### Main Service: `plutus`
+```bash
+docker-compose up plutus              # Run normally
+docker-compose up -d plutus           # Run in background
+```
 
-The private keys are converted into their respective public keys using the `fastecdsa` python library. This is the fastest library to perform secp256k1 signing. If you run this on Windows then `fastecdsa` is not supported, so instead we use `starkbank-ecdsa` to generate public keys. The public keys are converted into their Bitcoin wallet addresses using the `binascii` and `hashlib` standard libraries.
+#### Monitoring Service
+```bash
+docker-compose --profile monitoring up
+```
 
-A pre-calculated database of every funded P2PKH Bitcoin address is included in this project. The generated address is searched within the database, and if it is found that the address has a balance, then the private key, public key and wallet address are saved to the text file `plutus.txt` on the user's hard drive.
+#### Benchmark Service
+```bash
+docker-compose --profile benchmark run --rm plutus-benchmark
+```
 
-This program also utilizes multiprocessing through the `multiprocessing.Process()` function in order to make concurrent calculations.
+### Configuration
 
-# Efficiency
+Create and edit `.env` file:
+```bash
+cp .env.example .env
+```
 
-It takes `0.002` seconds for this progam to brute force a __single__ Bitcoin address. 
+Available options:
+```bash
+VERBOSE=0          # 0=silent, 1=print addresses
+SUBSTRING=8        # Address suffix length (1-26)
+BATCH_SIZE=1000    # Addresses per batch
+CPU_COUNT=4        # CPU cores to use
+MONITOR_INTERVAL=60 # Monitor update interval
+```
 
-However, through `multiprocessing.Process()` a concurrent process is created for every CPU your computer has. So this program can brute force a single address at a speed of `0.002 ÷ cpu_count()` seconds.
+### Docker File Structure
+```
+Plutus/
+├── docker-compose.yml           # Main orchestration
+├── Dockerfile                   # Container build
+├── .env                         # Configuration
+├── start.sh                     # Easy startup script
+├── Makefile                     # Convenient commands
+├── output/                      # Results (mounted)
+├── database/                    # Address database (mounted)
+└── plutus.txt                   # Found addresses (mounted)
+```
 
-# Database FAQ
+## Manual Installation
 
-An offline database is used to find the balance of generated Bitcoin addresses. Visit <a href="/database/">/database</a> for information.
+### Dependencies
+- [Python 3.9+](https://www.python.org/downloads/)
+- System dependencies (Linux/macOS): `sudo apt-get install libgmp3-dev`
+- Python packages: `pip3 install -r requirements.txt`
 
-# Parameters
+### Installation Steps
+```bash
+git clone https://github.com/steven-aranaga/Plutus.git
+cd Plutus
+pip3 install -r requirements.txt
+```
 
-This program has optional parameters to customize how it runs:
+## Usage
 
-__help__: `python3 plutus.py help` <br />
-Prints a short explanation of the parameters and how they work
+### Command Line Options
+```bash
+python3 plutus.py [options]
 
-__time__: `python3 plutus.py time` <br />
-Brute forces a single address and takes a timestamp of how long it took - used for speed testing purposes
+Options:
+  help                    Show help message
+  time                    Run performance benchmark
+  verbose=0|1            Print addresses (0=silent, 1=verbose)
+  substring=1-26         Address suffix length for memory efficiency
+  batch_size=N           Addresses per batch (default: 1000)
+  cpu_count=N            CPU cores to use
+```
 
-__verbose__: 0 or 1 <br />
-`python3 plutus.py verbose=1`: When set to 1, then every bitcoin address that gets bruteforced will be printed to the terminal. This has the potential to slow the program down
+### Examples
+```bash
+# Default run
+python3 plutus.py
 
-`python3 plutus.py verbose=0`: When set to 0, the program will not print anything to the terminal and the bruteforcing will work silently. By default verbose is set to 0
+# Verbose mode with custom settings
+python3 plutus.py verbose=1 substring=10 batch_size=500
 
-__substring__: `python3 plutus.py substring=8`:
-To make the program memory efficient, the entire bitcoin address is not loaded from the database. Only the last <__substring__> characters are loaded. This significantly reduces the amount of RAM required to run the program. if you still get memory errors then try making this number smaller, by default it is set to 8. This opens us up to getting false positives (empty addresses mistaken as funded) with a probability of 1/(16^<__substring__>), however it does NOT leave us vulnerable to false negatives (funded addresses being mistaken as empty) so this is an acceptable compromise.
+# Performance test
+python3 plutus.py time
 
-__cpu_count__: `python3 plutus.py cpu_count=1`: number of cores to run concurrently. More cores = more resource usage but faster bruteforcing. Omit this parameter to run with the maximum number of cores
+# Use specific CPU count
+python3 plutus.py cpu_count=8
+```
 
-By default the program runs using `python3 plutus.py verbose=0 substring=8` if nothing is passed.
-  
-# Expected Output
+## Performance Optimizations
 
-If a wallet with a balance is found, then all necessary information about the wallet will be saved to the text file `plutus.txt`. An example is:
+### High-Performance Cryptography
+The optimized version uses the fastest available cryptographic libraries:
 
->hex private key: 5A4F3F1CAB44848B2C2C515AE74E9CC487A9982C9DD695810230EA48B1DCEADD<br/>
->WIF private key: 5JW4RCAXDbocFLK9bxqw5cbQwuSn86fpbmz2HhT9nvKMTh68hjm<br/>
->public key: 04393B30BC950F358326062FF28D194A5B28751C1FF2562C02CA4DFB2A864DE63280CC140D0D540EA1A5711D1E519C842684F42445C41CB501B7EA00361699C320<br/>
->uncompressed address: 1Kz2CTvjzkZ3p2BQb5x5DX6GEoHX2jFS45<br/>
+| Library | Performance | Notes |
+|---------|-------------|-------|
+| **coincurve** | ~42,000 addr/sec | Primary choice (25x faster than fastecdsa) |
+| fastecdsa | ~1,700 addr/sec | Fallback option |
+| starkbank-ecdsa | ~900,000 addr/sec* | Fastest but less reliable |
 
-# Recent Improvements & TODO
+*Raw benchmark performance; actual performance may vary
 
-<a href="https://github.com/Isaacdelly/Plutus/issues">Create an issue</a> so I can add more stuff to improve
+### Key Optimizations
+1. **Batch Processing**: Process multiple addresses simultaneously
+2. **Advanced Multiprocessing**: ThreadPoolExecutor for better resource management
+3. **Optimized Database Loading**: Parallel file processing with memory efficiency
+4. **Efficient Address Verification**: Chunk-based reading with preliminary checks
+5. **Memory Management**: Configurable substring matching to reduce RAM usage
+
+### Performance Improvements
+- **Original**: ~1,250 addresses/second
+- **Optimized**: ~1,600+ addresses/second
+- **With coincurve**: ~42,000+ addresses/second (25x improvement)
+
+### Bloom Filter Support
+Includes demonstration of Bloom filters for extremely large databases:
+- Memory efficient probabilistic data structure
+- Constant-time O(1) lookups
+- Handles billions of addresses with minimal memory
+
+## Configuration
+
+### Memory Efficiency
+The `substring` parameter controls memory usage vs. accuracy:
+- Higher values = more memory, fewer false positives
+- Lower values = less memory, more false positives
+- Recommended: 8 (default) for good balance
+- False positive probability: 1/(16^substring)
+
+### Resource Management
+- **Batch Size**: Larger batches = better performance, more memory
+- **CPU Count**: More cores = faster processing, more resource usage
+- **Substring Length**: Affects memory usage and accuracy
+
+## How It Works
+
+### Core Algorithm
+1. **Key Generation**: Generate random 32-byte private keys using `os.urandom()`
+2. **Public Key Conversion**: Convert to public keys using high-performance crypto libraries
+3. **Address Generation**: Create Bitcoin addresses using `binascii` and `hashlib`
+4. **Database Lookup**: Check against pre-calculated database of funded addresses
+5. **Result Storage**: Save found addresses to `plutus.txt`
+
+### Database Structure
+- Pre-calculated database of funded P2PKH Bitcoin addresses
+- Memory-efficient suffix matching for large datasets
+- Read-only mounting in Docker for safety
+
+### Multiprocessing
+- Utilizes `ThreadPoolExecutor` for concurrent processing
+- Configurable CPU core usage
+- Efficient task distribution and resource management
+
+## Proof of Concept
+
+This program attempts to find Bitcoin private keys that correlate to wallets with positive balances. It's essentially a brute forcing algorithm that:
+
+1. Continuously generates random Bitcoin private keys
+2. Converts private keys to wallet addresses
+3. Checks addresses against a database of funded wallets
+4. Saves any matches to `plutus.txt`
+
+The goal is to randomly find a funded wallet out of the 2^160 possible wallets in existence.
+
+**Note**: The probability of finding a funded wallet is astronomically low due to the vast number of possible private keys (2^256). This software is primarily for educational and research purposes.
+
+## Legal Notice
+
+⚠️ **Important**: This software is for educational purposes only. 
+
+- Bitcoin brute forcing has an astronomically low probability of success
+- Use responsibly and in accordance with local laws
+- The authors are not responsible for any misuse of this software
+- Consider the ethical implications before use
+
+## Troubleshooting
+
+### Docker Issues
+```bash
+# View logs
+docker-compose logs plutus
+
+# Check container status
+docker-compose ps
+
+# Restart services
+docker-compose restart
+
+# Clean rebuild
+docker-compose down --rmi all && docker-compose up --build
+```
+
+### Performance Issues
+- Reduce `BATCH_SIZE` if running out of memory
+- Reduce `SUBSTRING` length for lower memory usage
+- Ensure database files are on fast storage (SSD)
+- Monitor resource usage with `docker stats`
+
+### Common Problems
+1. **Out of memory**: Reduce batch size or substring length
+2. **Database not found**: Ensure database files exist in `database/` directory
+3. **Permission errors**: Check file permissions on mounted volumes
+4. **Slow performance**: Install `coincurve` library for 25x speed improvement
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
+
+## Support
+
+- GitHub Issues: [Report bugs or request features](https://github.com/steven-aranaga/Plutus/issues)
+- Documentation: See inline help with `python3 plutus.py help`
+- Docker Help: Use `./start.sh --help` or `make help`

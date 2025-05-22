@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  plutus:
+    build: .
+    container_name: plutus-brute-forcer
+    volumes:
+      # Mount the output directory to persist results
+      - ./output:/app/output
+      # Mount the database directory (read-only)
+      - ./database:/app/database:ro
+      # Mount plutus.txt to persist found addresses
+      - ./plutus.txt:/app/plutus.txt
+    environment:
+      # Set default parameters (can be overridden)
+      - VERBOSE=0
+      - SUBSTRING=8
+      - BATCH_SIZE=1000
+      - CPU_COUNT=4
+    restart: unless-stopped
+    # Limit resources to prevent overwhelming the host
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 2G
+        reservations:
+          cpus: '2.0'
+          memory: 1G
+    # Override the default command with environment variables
+    command: >
+      sh -c "python3 plutus.py 
+             verbose=$${VERBOSE:-0} 
+             substring=$${SUBSTRING:-8} 
+             batch_size=$${BATCH_SIZE:-1000} 
+             cpu_count=$${CPU_COUNT:-4}"
+
+  # Optional: Add a monitoring service
+  plutus-monitor:
+    build: .
+    container_name: plutus-monitor
+    volumes:
+      - ./output:/app/output:ro
+      - ./plutus.txt:/app/plutus.txt:ro
+    environment:
+      - MONITOR_INTERVAL=60
+    command: >
+      sh -c "while true; do
+               echo '=== Plutus Status at $(date) ==='
+               if [ -f /app/plutus.txt ]; then
+                 echo 'Found addresses:'
+                 tail -20 /app/plutus.txt
+               else
+                 echo 'No addresses found yet'
+               fi
+               echo '=========================='
+               sleep $${MONITOR_INTERVAL:-60}
+             done"
+    profiles:
+      - monitoring
+    depends_on:
+      - plutus
+
+  # Optional: Benchmark service
+  plutus-benchmark:
+    build: .
+    container_name: plutus-benchmark
+    volumes:
+      - ./database:/app/database:ro
+    command: python3 plutus.py time
+    profiles:
+      - benchmark
