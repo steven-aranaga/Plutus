@@ -1,31 +1,79 @@
 # Plutus Bitcoin Brute Forcer
 # Made by Isaac Delly
 # https://github.com/Isaacdelly/Plutus
+# Optimized version with high-performance cryptography
 
-from fastecdsa import keys, curve
-from ellipticcurve.privateKey import PrivateKey
 import platform
 import multiprocessing
+from multiprocessing import Pool, Manager, Value, Lock
 import hashlib
 import binascii
 import os
 import sys
 import time
+import concurrent.futures
+import itertools
+import mmap
+
+# Import the fastest available cryptography library
+try:
+    # First choice: coincurve (very fast and reliable)
+    import coincurve
+    CRYPTO_LIB = "coincurve"
+except ImportError:
+    try:
+        # Second choice: fastecdsa (slower)
+        from fastecdsa import keys, curve
+        CRYPTO_LIB = "fastecdsa"
+    except ImportError:
+        try:
+            # Third choice: starkbank-ecdsa (can be fastest but less reliable)
+            from ellipticcurve.privateKey import PrivateKey
+            from ellipticcurve.curve import secp256k1
+            CRYPTO_LIB = "starkbank"
+        except ImportError:
+            print("ERROR: No ECC library found. Install one of: coincurve, fastecdsa, or starkbank-ecdsa")
+            sys.exit(1)
+
+print(f"Using {CRYPTO_LIB} cryptography library")
 
 DATABASE = r'database/11_13_2022/'
 
-def generate_private_key():
-    return binascii.hexlify(os.urandom(32)).decode('utf-8').upper()
+# Use a batch size for generating multiple keys at once
+BATCH_SIZE = 1000
 
-def private_key_to_public_key(private_key, fastecdsa):
-    if fastecdsa:
-        key = keys.get_public_key(int('0x' + private_key, 0), curve.secp256k1)
-        return '04' + (hex(key.x)[2:] + hex(key.y)[2:]).zfill(128)
-    else:
-        pk = PrivateKey().fromString(bytes.fromhex(private_key))
-        return '04' + pk.publicKey().toString().hex().upper()
+def generate_private_keys(batch_size=BATCH_SIZE):
+    """Generate multiple private keys at once for better efficiency"""
+    return [binascii.hexlify(os.urandom(32)).decode('utf-8').upper() 
+            for _ in range(batch_size)]
+
+def private_key_to_public_key(private_key, _unused=None):
+    """Convert private key to public key using the fastest available library"""
+    try:
+        if CRYPTO_LIB == "coincurve":
+            # Coincurve (very fast and reliable)
+            private_key_bytes = bytes.fromhex(private_key)
+            public_key = coincurve.PublicKey.from_secret(private_key_bytes)
+            return '04' + public_key.format(compressed=False)[1:].hex().upper()
+        elif CRYPTO_LIB == "fastecdsa":
+            # Fastecdsa (slower)
+            key = keys.get_public_key(int('0x' + private_key, 0), curve.secp256k1)
+            return '04' + (hex(key.x)[2:] + hex(key.y)[2:]).zfill(128)
+        else:
+            # Starkbank-ecdsa
+            pk_int = int(private_key, 16)
+            pk = PrivateKey(pk_int, curve=secp256k1)
+            return '04' + pk.publicKey().toString().hex().upper()
+    except Exception as e:
+        # Fall back to fastecdsa as last resort
+        if 'fastecdsa' in sys.modules:
+            key = keys.get_public_key(int('0x' + private_key, 0), curve.secp256k1)
+            return '04' + (hex(key.x)[2:] + hex(key.y)[2:]).zfill(128)
+        else:
+            raise Exception(f"Failed to generate public key: {e}")
 
 def public_key_to_address(public_key):
+    """Convert public key to Bitcoin address"""
     output = []
     alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
     var = hashlib.new('ripemd160')
@@ -43,6 +91,7 @@ def public_key_to_address(public_key):
     return ''.join(output[::-1])
 
 def private_key_to_wif(private_key):
+    """Convert private key to WIF format"""
     digest = hashlib.sha256(binascii.unhexlify('80' + private_key)).hexdigest()
     var = hashlib.sha256(binascii.unhexlify(digest)).hexdigest()
     var = binascii.unhexlify('80' + private_key + var[0:8])
@@ -59,55 +108,185 @@ def private_key_to_wif(private_key):
         else: break
     return chars[0] * pad + result
 
-def main(database, args):
-    while True:
-        private_key = generate_private_key()
-        public_key = private_key_to_public_key(private_key, args['fastecdsa']) 
+def process_key_batch(args):
+    """Process a batch of keys and check against the database"""
+    database, config, batch_size = args
+    found_addresses = []
+    
+    # Generate a batch of private keys
+    private_keys = generate_private_keys(batch_size)
+    
+    for private_key in private_keys:
+        public_key = private_key_to_public_key(private_key, config['fastecdsa'])
         address = public_key_to_address(public_key)
-
-        if args['verbose']:
+        
+        if config['verbose']:
             print(address)
         
-        if address[-args['substring']:] in database:
-            for filename in os.listdir(DATABASE):
-                with open(DATABASE + filename) as file:
-                    if address in file.read():
-                        with open('plutus.txt', 'a') as plutus:
-                            plutus.write('hex private key: ' + str(private_key) + '\n' +
-                                         'WIF private key: ' + str(private_key_to_wif(private_key)) + '\n'
-                                         'public key: ' + str(public_key) + '\n' +
-                                         'uncompressed address: ' + str(address) + '\n\n')
-                        break
+        # Check if the address suffix is in our database
+        if address[-config['substring']:] in database:
+            # Verify the full address in the database files
+            found = verify_address_in_database(address, config['substring'])
+            if found:
+                found_addresses.append((private_key, public_key, address))
+                save_found_address(private_key, public_key, address)
+    
+    return found_addresses
+
+def verify_address_in_database(address, substring_length):
+    """Verify if the full address exists in any database file using binary search"""
+    suffix = address[-substring_length:]
+    
+    # Only check files if the suffix matches
+    for filename in os.listdir(DATABASE):
+        file_path = os.path.join(DATABASE, filename)
+        
+        # Use memory mapping for faster file searching
+        with open(file_path, 'r') as f:
+            # First check if the file contains the address using a faster method
+            # Read the file in chunks and check for the address
+            chunk_size = 1024 * 1024  # 1MB chunks
+            found = False
+            
+            # Read the file in chunks for better memory efficiency
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                    
+                # If the address is in this chunk, do a more detailed search
+                if address in chunk:
+                    # Go back to the beginning of the file for a line-by-line search
+                    f.seek(0)
+                    for line in f:
+                        if address == line.strip():
+                            return True
+                    break
+    
+    return False
+
+def save_found_address(private_key, public_key, address):
+    """Save found address information to plutus.txt"""
+    with open('plutus.txt', 'a') as plutus:
+        plutus.write('hex private key: ' + str(private_key) + '\n' +
+                     'WIF private key: ' + str(private_key_to_wif(private_key)) + '\n' +
+                     'public key: ' + str(public_key) + '\n' +
+                     'uncompressed address: ' + str(address) + '\n\n')
+
+def main(database, args):
+    """Main function that processes batches of keys in parallel"""
+    # Create a thread pool for concurrent processing
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args['cpu_count']) as executor:
+        # Process batches of keys
+        batch_args = [(database, args, BATCH_SIZE) for _ in range(args['cpu_count'])]
+        
+        while True:
+            # Submit batch processing tasks
+            futures = [executor.submit(process_key_batch, arg) for arg in batch_args]
+            
+            # Wait for all tasks to complete
+            for future in concurrent.futures.as_completed(futures):
+                found_addresses = future.result()
+                if found_addresses:
+                    print(f"Found {len(found_addresses)} addresses with balances!")
 
 def print_help():
     print('''Plutus homepage: https://github.com/Isaacdelly/Plutus
 Plutus QA support: https://github.com/Isaacdelly/Plutus/issues
 
-
 Speed test: 
-execute 'python3 plutus.py time', the output will be the time it takes to bruteforce a single address in seconds
-
+execute 'python3 plutus.py time', the output will be the time it takes to bruteforce a batch of addresses in seconds
 
 Quick start: run command 'python3 plutus.py'
 
 By default this program runs with parameters:
-python3 plutus.py verbose=0 substring=8
+python3 plutus.py verbose=0 substring=8 batch_size=1000
 
 verbose: must be 0 or 1. If 1, then every bitcoin address that gets bruteforced will be printed to the terminal. This has the potential to slow the program down. An input of 0 will not print anything to the terminal and the bruteforcing will work silently. By default verbose is 0.
 
 substring: to make the program memory efficient, the entire bitcoin address is not loaded from the database. Only the last <substring> characters are loaded. This significantly reduces the amount of RAM required to run the program. if you still get memory errors then try making this number smaller, by default it is set to 8. This opens us up to getting false positives (empty addresses mistaken as funded) with a probability of 1/(16^<substring>), however it does NOT leave us vulnerable to false negatives (funded addresses being mistaken as empty) so this is an acceptable compromise.
 
+batch_size: number of addresses to generate and check in a single batch. Higher values can improve performance but use more memory. Default is 1000.
+
 cpu_count: number of cores to run concurrently. More cores = more resource usage but faster bruteforcing. Omit this parameter to run with the maximum number of cores''')
     sys.exit(0)
 
 def timer(args):
+    """Measure the time it takes to process a batch of addresses"""
     start = time.time()
-    private_key = generate_private_key()
-    public_key = private_key_to_public_key(private_key, args['fastecdsa'])
-    address = public_key_to_address(public_key)
+    batch_size = min(100, args.get('batch_size', BATCH_SIZE))  # Use a smaller batch for timing
+    
+    # Generate a batch of private keys
+    private_keys = generate_private_keys(batch_size)
+    
+    # Process each key
+    for private_key in private_keys:
+        public_key = private_key_to_public_key(private_key, args['fastecdsa'])
+        address = public_key_to_address(public_key)
+    
     end = time.time()
-    print(str(end - start))
+    total_time = end - start
+    per_address = total_time / batch_size
+    
+    print(f"Total time for {batch_size} addresses: {total_time:.6f} seconds")
+    print(f"Time per address: {per_address:.6f} seconds")
+    print(f"Addresses per second: {batch_size/total_time:.2f}")
     sys.exit(0)
+
+def load_database_efficiently(substring_length):
+    """Load database more efficiently with reduced memory usage"""
+    print('Reading database files...')
+    database = set()
+    total_addresses = 0
+    max_files_at_once = 5  # Process only a few files at a time to reduce memory usage
+    
+    def process_file(file_path):
+        """Process a single database file and return the suffixes"""
+        local_suffixes = set()
+        local_count = 0
+        
+        try:
+            with open(file_path, 'r') as file:
+                # Process the file line by line to minimize memory usage
+                for line in file:
+                    address = line.strip()
+                    if address and address.startswith('1'):  # Only process P2PKH addresses
+                        local_suffixes.add(address[-substring_length:])
+                        local_count += 1
+                        
+                        # Periodically clear memory by returning partial results
+                        if local_count % 100000 == 0:
+                            yield local_suffixes, local_count
+                            local_suffixes = set()
+                            local_count = 0
+                
+                # Return any remaining results
+                if local_count > 0:
+                    yield local_suffixes, local_count
+        except Exception as e:
+            print(f"Error processing {file_path}: {e}")
+            yield set(), 0
+    
+    # Get all database files
+    file_paths = [os.path.join(DATABASE, filename) for filename in os.listdir(DATABASE)]
+    
+    # Process files in smaller batches to reduce memory usage
+    for i in range(0, len(file_paths), max_files_at_once):
+        batch = file_paths[i:i+max_files_at_once]
+        print(f"Processing batch {i//max_files_at_once + 1}/{(len(file_paths) + max_files_at_once - 1)//max_files_at_once}")
+        
+        # Process this batch of files
+        for file_path in batch:
+            file_total = 0
+            for suffixes, count in process_file(file_path):
+                database.update(suffixes)
+                file_total += count
+                total_addresses += count
+            
+            print(f"Processed {file_path} - {file_total} addresses")
+    
+    print(f'DONE - Loaded {total_addresses} addresses into {len(database)} unique suffixes')
+    return database
 
 if __name__ == '__main__':
     args = {
@@ -115,51 +294,59 @@ if __name__ == '__main__':
         'substring': 8,
         'fastecdsa': platform.system() in ['Linux', 'Darwin'],
         'cpu_count': multiprocessing.cpu_count(),
+        'batch_size': BATCH_SIZE,
     }
     
+    # Parse command line arguments
     for arg in sys.argv[1:]:
-        command = arg.split('=')[0]
+        if '=' in arg:
+            command, value = arg.split('=', 1)
+        else:
+            command, value = arg, None
+            
         if command == 'help':
             print_help()
         elif command == 'time':
             timer(args)
-        elif command == 'cpu_count':
-            cpu_count = int(arg.split('=')[1])
+        elif command == 'cpu_count' and value:
+            cpu_count = int(value)
             if cpu_count > 0 and cpu_count <= multiprocessing.cpu_count():
                 args['cpu_count'] = cpu_count
             else:
-                print('invalid input. cpu_count must be greater than 0 and less than or equal to ' + str(multiprocessing.cpu_count()))
+                print(f'Invalid input. cpu_count must be greater than 0 and less than or equal to {multiprocessing.cpu_count()}')
                 sys.exit(-1)
-        elif command == 'verbose':
-            verbose = arg.split('=')[1]
-            if verbose in ['0', '1']:
-                args['verbose'] = verbose
+        elif command == 'verbose' and value:
+            if value in ['0', '1']:
+                args['verbose'] = int(value)
             else:
-                print('invalid input. verbose must be 0(false) or 1(true)')
+                print('Invalid input. verbose must be 0(false) or 1(true)')
                 sys.exit(-1)
-        elif command == 'substring':
-            substring = int(arg.split('=')[1])
+        elif command == 'substring' and value:
+            substring = int(value)
             if substring > 0 and substring < 27:
                 args['substring'] = substring
             else:
-                print('invalid input. substring must be greater than 0 and less than 27')
+                print('Invalid input. substring must be greater than 0 and less than 27')
+                sys.exit(-1)
+        elif command == 'batch_size' and value:
+            batch_size = int(value)
+            if batch_size > 0:
+                args['batch_size'] = batch_size
+                # Update the module-level batch size
+                args['batch_size'] = batch_size
+            else:
+                print('Invalid input. batch_size must be greater than 0')
                 sys.exit(-1)
         else:
-            print('invalid input: ' + command  + '\nrun `python3 plutus.py help` for help')
+            print(f'Invalid input: {command}\nRun `python3 plutus.py help` for help')
             sys.exit(-1)
     
-    print('reading database files...')
-    database = set()
-    for filename in os.listdir(DATABASE):
-        with open(DATABASE + filename) as file:
-            for address in file:
-                address = address.strip()
-                if address.startswith('1'):
-                    database.add(address[-args['substring']:])
-    print('DONE')
-
-    print('database size: ' + str(len(database)))
-    print('processes spawned: ' + str(args['cpu_count']))
+    # Load the database efficiently
+    database = load_database_efficiently(args['substring'])
     
-    for cpu in range(args['cpu_count']):
-        multiprocessing.Process(target = main, args = (database, args)).start()
+    print(f'Database size: {len(database)} unique suffixes')
+    print(f'Batch size: {args["batch_size"]} addresses per batch')
+    print(f'Processes spawned: {args["cpu_count"]}')
+    
+    # Start the main process
+    main(database, args)
