@@ -50,10 +50,10 @@ if BLOOM_FILTER_AVAILABLE:
 else:
     print("Bloom filter not available. Install pybloom-live for faster lookups")
 
-DATABASE = r'database/11_13_2022/'
+DATABASE = r'database/'
 
 # Use a batch size for generating multiple keys at once
-BATCH_SIZE = 1000
+BATCH_SIZE = 500
 
 # Memory usage monitoring
 def get_memory_usage():
@@ -331,25 +331,101 @@ def timer(args):
     
     sys.exit(0)
 
-def load_database_efficiently(substring_length, use_bloom=False):
-    """Load database more efficiently with reduced memory usage"""
+def load_database(file_path, delimiter='\t', substring_length=None, use_bloom=False):
+    """
+    Load data from a TSV file into a dictionary database or a set of address substrings.
+    
+    Args:
+        file_path (str): Path to the TSV file
+        delimiter (str): Field delimiter (default: tab)
+        substring_length (int, optional): If provided, only store the last N characters of addresses
+        use_bloom (bool): Flag to indicate if Bloom filter should be used (not implemented)
+    
+    Returns:
+        dict or set: Dictionary with keys as IDs and values as record dictionaries,
+                    or a set of address substrings if substring_length is provided
+    """
+    # If substring_length is provided, use a set for efficient storage
+    if substring_length is not None:
+        database = set()
+        try:
+            total_addresses = 0
+            with open(file_path, 'r', encoding='utf-8') as file:
+                # Skip header if it exists
+                header = next(file, None)
+                
+                # Process each data line
+                for line in file:
+                    address = line.strip().split(delimiter)[0]  # Assume address is first column
+                    if address and address.startswith('1'):  # Only process P2PKH addresses
+                        database.add(address[-substring_length:])
+                        total_addresses += 1
+                        
+            print(f"Loaded {total_addresses:,} addresses from {file_path}")
+            return database, total_addresses
+        except FileNotFoundError:
+            print(f"Error: File {file_path} not found")
+            return set(), 0
+        except Exception as e:
+            print(f"Error loading database: {e}")
+            return set(), 0
+    
+    # Otherwise, use the original dictionary-based approach
+    else:
+        database = {}
+        try:
+            with open(file_path, 'r', encoding='utf-8') as file:
+                # Read header line to get column names
+                header = next(file).strip().split(delimiter)
+                
+                # Process each data line
+                for line in file:
+                    fields = line.strip().split(delimiter)
+                    if len(fields) == len(header):
+                        # Create record using header fields as keys
+                        record = {header[i]: fields[i] for i in range(len(header))}
+                        # Use first column as ID
+                        record_id = fields[0]
+                        database[record_id] = record
+                        
+            print(f"Loaded {len(database)} records from {file_path}")
+            return database
+        except FileNotFoundError:
+            print(f"Error: File {file_path} not found")
+            return {}
+        except Exception as e:
+            print(f"Error loading database: {e}")
+            return {}
+
+def load_database_efficiently(database_dir, substring_length, use_bloom=False, max_files_at_once=5):
+    """
+    Load database more efficiently with reduced memory usage by processing multiple files.
+    
+    Args:
+        database_dir (str): Directory containing database files
+        substring_length (int): Number of characters to keep from the end of each address
+        use_bloom (bool): Flag for Bloom filter usage (not implemented)
+        max_files_at_once (int): Maximum number of files to process simultaneously
+    
+    Returns:
+        set: Set of address substrings
+        int: Total number of addresses processed
+    """
+    import os
+    from tqdm import tqdm
+    
     print('Reading database files...')
     
-    if use_bloom and BLOOM_FILTER_AVAILABLE:
-        print("Using Bloom filter for database lookups")
-        # Create a scalable Bloom filter with a low false positive probability
-        database = ScalableBloomFilter(initial_capacity=1000000, error_rate=0.000001)
-    else:
-        database = set()
-        
+    # Use a set for all addresses
+    database = set()
     total_addresses = 0
-    max_files_at_once = 5  # Process only a few files at a time to reduce memory usage
     
-    # Get all database files
-    file_paths = [os.path.join(DATABASE, filename) for filename in os.listdir(DATABASE)]
+    # Get all database files (only .txt files)
+    file_paths = [os.path.join(database_dir, filename) for filename in os.listdir(database_dir) 
+                 if filename.endswith('.txt')]
     
     # Show progress bar
-    with tqdm.tqdm(total=len(file_paths), desc="Loading database") as pbar:
+    with tqdm(total=len(file_paths), desc="Loading database") as pbar:
         # Process files in smaller batches to reduce memory usage
         for i in range(0, len(file_paths), max_files_at_once):
             batch = file_paths[i:i+max_files_at_once]
@@ -363,10 +439,7 @@ def load_database_efficiently(substring_length, use_bloom=False):
                         for line in file:
                             address = line.strip()
                             if address and address.startswith('1'):  # Only process P2PKH addresses
-                                if use_bloom and BLOOM_FILTER_AVAILABLE:
-                                    database.add(address[-substring_length:])
-                                else:
-                                    database.add(address[-substring_length:])
+                                database.add(address[-substring_length:])
                                 file_total += 1
                                 total_addresses += 1
                 except Exception as e:
@@ -375,6 +448,14 @@ def load_database_efficiently(substring_length, use_bloom=False):
                 pbar.update(1)
     
     print(f'DONE - Loaded {total_addresses:,} addresses into database')
+    
+    # Function to get memory usage (placeholder - implement as needed)
+    def get_memory_usage():
+        import psutil
+        import os
+        process = psutil.Process(os.getpid())
+        return process.memory_info().rss / (1024 * 1024)  # Convert to MB
+        
     print(f'Memory usage after loading: {get_memory_usage():.2f} MB')
     return database, total_addresses
 
@@ -453,7 +534,7 @@ if __name__ == '__main__':
     print(f"Initial memory usage: {get_memory_usage():.2f} MB")
     
     # Load the database efficiently
-    database, total_addresses = load_database_efficiently(args['substring'], args['use_bloom'])
+    database, total_addresses = load_database_efficiently(DATABASE, args['substring'])
     
     print(f'Database size: {len(database):,} unique suffixes')
     print(f'Batch size: {args["batch_size"]} addresses per batch')
