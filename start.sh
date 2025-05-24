@@ -76,6 +76,11 @@ while [[ $# -gt 0 ]]; do
             PROFILE="--profile benchmark"
             shift
             ;;
+        -r|--randstorm)
+            MODE="randstorm"
+            PROFILE="--profile randstorm"
+            shift
+            ;;
         -d|--daemon)
             DAEMON="-d"
             shift
@@ -88,6 +93,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -m, --monitor     Run with monitoring service"
             echo "  -b, --benchmark   Run benchmark test"
+            echo "  -r, --randstorm   Run Randstorm exploit for BitcoinJS wallets"
             echo "  -d, --daemon      Run in background (daemon mode)"
             echo "  -h, --help        Show this help message"
             echo ""
@@ -96,6 +102,7 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 -d             # Run in background"
             echo "  $0 -m             # Run with monitoring"
             echo "  $0 -b             # Run benchmark"
+            echo "  $0 -r             # Run Randstorm exploit"
             exit 0
             ;;
         *)
@@ -134,6 +141,10 @@ case $MODE in
     "benchmark")
         print_status "Running Plutus benchmark..."
         docker-compose $PROFILE run --rm plutus-benchmark
+        ;;
+    "randstorm")
+        print_status "Running Randstorm exploit..."
+        docker-compose $PROFILE run --rm plutus-randstorm
         ;;
     *)
         print_status "Starting Plutus..."

@@ -1,6 +1,6 @@
 # Plutus Docker Makefile
 
-.PHONY: help build run stop clean logs shell benchmark monitor setup
+.PHONY: help build run stop clean logs shell benchmark monitor randstorm setup
 
 # Default target
 help:
@@ -13,6 +13,7 @@ help:
 	@echo "  run-bg     - Run Plutus in background"
 	@echo "  monitor    - Run with monitoring service"
 	@echo "  benchmark  - Run performance benchmark"
+	@echo "  randstorm  - Run Randstorm exploit for BitcoinJS wallets"
 	@echo "  stop       - Stop all containers"
 	@echo "  logs       - Show container logs"
 	@echo "  shell      - Access container shell"
@@ -50,6 +51,10 @@ monitor: setup
 # Run benchmark
 benchmark: setup
 	docker-compose --profile benchmark run --rm plutus-benchmark
+
+# Run Randstorm exploit
+randstorm: setup
+	docker-compose --profile randstorm run --rm plutus-randstorm
 
 # Stop containers
 stop:

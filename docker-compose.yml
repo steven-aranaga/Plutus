@@ -35,6 +35,43 @@ services:
              batch_size=$${BATCH_SIZE:-1000} 
              cpu_count=$${CPU_COUNT:-4}"
 
+  # Randstorm exploit service
+  plutus-randstorm:
+    build: .
+    container_name: plutus-randstorm
+    volumes:
+      # Mount the output directory to persist results
+      - ./output:/app/output
+      # Mount the database directory (read-only)
+      - ./database:/app/database:ro
+      # Mount plutus.txt to persist found addresses
+      - ./plutus.txt:/app/plutus.txt
+    environment:
+      # Set default parameters (can be overridden)
+      - VERBOSE=0
+      - SUBSTRING=8
+      - BATCH_SIZE=500
+      - CPU_COUNT=4
+    restart: unless-stopped
+    # Limit resources to prevent overwhelming the host
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 2G
+        reservations:
+          cpus: '2.0'
+          memory: 1G
+    # Override the default command with environment variables
+    command: >
+      sh -c "python3 randstorm_exploit.py 
+             verbose=$${VERBOSE:-0} 
+             substring=$${SUBSTRING:-8} 
+             batch_size=$${BATCH_SIZE:-500} 
+             cpu_count=$${CPU_COUNT:-4}"
+    profiles:
+      - randstorm
+
   # Optional: Add a monitoring service
   plutus-monitor:
     build: .

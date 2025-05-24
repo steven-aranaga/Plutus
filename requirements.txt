@@ -1,7 +1,7 @@
 # Core cryptographic libraries (in order of preference)
+starkbank-ecdsa>=2.0.1  # Version 2.0.1+ required for security fix (CVE-2021-43572)
 coincurve>=18.0.0
 fastecdsa>=2.2.3
-starkbank-ecdsa>=2.0.0
 
 # Performance optimization
 pybloom-live>=4.0.0
@@ -13,4 +13,3 @@ psutil>=5.9.0
 # Optional: For advanced monitoring
 # matplotlib>=3.5.0
 # numpy>=1.22.0
-

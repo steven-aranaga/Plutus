@@ -10,6 +10,30 @@ Plutus is a proof-of-concept tool that demonstrates the process of Bitcoin priva
 
 **Note**: The probability of finding a funded wallet is astronomically low (1 in 2^160) due to the vast keyspace. This software is primarily for educational and research purposes.
 
+## New Feature: Randstorm Exploit
+
+This version includes a specialized tool to target wallets created with BitcoinJS between 2011-2015 that are vulnerable to the "Randstorm" vulnerability. The vulnerability affects wallets created using the SecureRandom() function in the JSBN library, which had weak entropy collection due to flaws in browser Math.random() implementations.
+
+### Using the Randstorm Exploit
+
+```bash
+# Run the Randstorm exploit tool
+python3 randstorm_exploit.py
+
+# With custom settings
+python3 randstorm_exploit.py verbose=1 substring=10 cpu_count=4
+```
+
+### How the Randstorm Exploit Works
+
+1. **Targeted Search**: Instead of random brute forcing, the tool generates private key candidates that match the patterns of keys that would have been created by vulnerable BitcoinJS implementations.
+
+2. **Browser Simulation**: The tool simulates the weak random number generators used in Chrome, Firefox, and Safari during the 2011-2015 period.
+
+3. **Efficient Filtering**: Only addresses that match the characteristics of BitcoinJS-generated wallets are checked against the database.
+
+4. **Parallel Processing**: The tool uses multi-threading to efficiently process multiple potential vulnerable wallets simultaneously.
+
 ## Table of Contents
 - [Quick Start](#quick-start)
 - [Docker Setup (Recommended)](#docker-setup-recommended)
@@ -39,6 +63,9 @@ cd Plutus
 
 # Or run benchmark
 ./start.sh --benchmark
+
+# Run the Randstorm exploit
+./start.sh --randstorm
 ```
 
 ### Using Make Commands
@@ -48,6 +75,7 @@ make run           # Run normally
 make run-bg        # Run in background
 make monitor       # Run with monitoring
 make benchmark     # Performance test
+make randstorm     # Run Randstorm exploit
 make logs          # View logs
 make stop          # Stop containers
 ```
@@ -60,6 +88,9 @@ pip3 install -r requirements.txt
 
 # Run directly
 python3 plutus.py
+
+# Or run the Randstorm exploit
+python3 randstorm_exploit.py
 ```
 
 ## Docker Setup (Recommended)
@@ -77,6 +108,11 @@ This project includes a complete Docker Compose setup for easy deployment and ma
 ```bash
 docker-compose up plutus              # Run normally
 docker-compose up -d plutus           # Run in background
+```
+
+#### Randstorm Exploit Service
+```bash
+docker-compose --profile randstorm up
 ```
 
 #### Monitoring Service
@@ -140,7 +176,7 @@ pip3 install coincurve
 
 ## Usage
 
-### Command Line Options
+### Command Line Options (Standard Mode)
 ```bash
 python3 plutus.py [options]
 
@@ -151,6 +187,18 @@ Options:
   substring=1-26         Address suffix length for memory efficiency
   batch_size=N           Addresses per batch (default: 1000)
   cpu_count=N            CPU cores to use
+```
+
+### Command Line Options (Randstorm Exploit)
+```bash
+python3 randstorm_exploit.py [options]
+
+Options:
+  help                    Show help message
+  verbose=0|1            Print addresses (0=silent, 1=verbose)
+  substring=1-26         Address suffix length for memory efficiency
+  cpu_count=N            CPU cores to use
+  batch_size=N           Addresses per batch (default: 500)
 ```
 
 ### Examples
@@ -166,6 +214,12 @@ python3 plutus.py time
 
 # Use specific CPU count
 python3 plutus.py cpu_count=8
+
+# Run Randstorm exploit
+python3 randstorm_exploit.py
+
+# Run Randstorm exploit with custom settings
+python3 randstorm_exploit.py verbose=1 cpu_count=4
 ```
 
 ## Performance Optimizations
@@ -175,9 +229,9 @@ The optimized version uses the fastest available cryptographic libraries:
 
 | Library | Performance | Notes |
 |---------|-------------|-------|
-| **coincurve** | ~42,000 addr/sec | Primary choice (25x faster than fastecdsa) |
+| **starkbank-ecdsa** | ~900,000 addr/sec* | Primary choice (fastest pure Python implementation) |
+| **coincurve** | ~42,000 addr/sec | Secondary choice (25x faster than fastecdsa) |
 | fastecdsa | ~1,700 addr/sec | Fallback option |
-| starkbank-ecdsa | ~900,000 addr/sec* | Fastest but less reliable |
 
 *Raw benchmark performance; actual performance may vary
 
@@ -188,11 +242,13 @@ The optimized version uses the fastest available cryptographic libraries:
 4. **Efficient Address Verification**: Chunk-based reading with preliminary checks
 5. **Memory Management**: Configurable substring matching to reduce RAM usage
 6. **Bloom Filter Support**: Optional probabilistic data structure for faster lookups
+7. **Targeted Randstorm Exploit**: Focused search for vulnerable BitcoinJS wallets
 
 ### Performance Improvements
 - **Original**: ~1,250 addresses/second
 - **Optimized**: ~1,600+ addresses/second
 - **With coincurve**: ~42,000+ addresses/second (25x improvement)
+- **Randstorm Exploit**: Significantly higher chance of success compared to random brute forcing
 
 ## Architecture
 
@@ -202,6 +258,7 @@ The optimized version uses the fastest available cryptographic libraries:
 3. **Address Converter**: Transforms public keys into Bitcoin addresses
 4. **Database Checker**: Verifies if generated addresses exist in the database
 5. **Result Manager**: Saves and reports found addresses
+6. **Randstorm Exploit**: Targets vulnerable BitcoinJS wallets from 2011-2015
 
 ### Data Flow
 ```
@@ -259,6 +316,7 @@ Typical performance on a modern system (Ryzen 7, 16GB RAM):
 | Default | ~42,000 | ~500MB |
 | With Bloom Filter | ~60,000 | ~1GB |
 | High Memory Mode | ~65,000 | ~2GB |
+| Randstorm Exploit | ~30,000 | ~600MB |
 
 ## Troubleshooting
 
@@ -321,4 +379,3 @@ Contributions are welcome! Please feel free to submit pull requests or open issu
 - GitHub Issues: [Report bugs or request features](https://github.com/steven-aranaga/Plutus/issues)
 - Documentation: See inline help with `python3 plutus.py help`
 - Docker Help: Use `./start.sh --help` or `make help`
-
