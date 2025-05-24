@@ -229,9 +229,9 @@ The optimized version uses the fastest available cryptographic libraries:
 
 | Library | Performance | Notes |
 |---------|-------------|-------|
-| **coincurve** | ~42,000 addr/sec | Primary choice (25x faster than fastecdsa) |
+| **starkbank-ecdsa** | ~900,000 addr/sec* | Primary choice (fastest pure Python implementation) |
+| **coincurve** | ~42,000 addr/sec | Secondary choice (25x faster than fastecdsa) |
 | fastecdsa | ~1,700 addr/sec | Fallback option |
-| starkbank-ecdsa | ~900,000 addr/sec* | Fastest but less reliable |
 
 *Raw benchmark performance; actual performance may vary
 
